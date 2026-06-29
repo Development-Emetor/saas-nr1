@@ -62,7 +62,7 @@ export default function JobsPage() {
         department: data.department,
         description: data.description,
         requirements: data.requirements,
-      });
+      }) as any;
       return { job, data };
     },
     onSuccess: async ({ job, data }) => {
