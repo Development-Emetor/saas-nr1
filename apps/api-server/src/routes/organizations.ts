@@ -122,4 +122,109 @@ router.post("/organizations/workers", requireRole("owner", "rh"), async (req, re
   });
 });
 
+// ── USERS ──────────────────────────────────────────────────────────────────
+router.get("/organizations/users", async (req, res) => {
+  const users = await db.query.usersTable.findMany({
+    where: eq(schema.usersTable.tenantId, req.tenantId!),
+    orderBy: (u, { asc }) => [asc(u.firstName)],
+  });
+  res.json(users.map(u => ({
+    id: u.id,
+    firstName: u.firstName,
+    lastName: u.lastName,
+    email: u.email,
+    role: u.role,
+    profileImageUrl: u.profileImageUrl,
+    createdAt: u.createdAt.toISOString(),
+  })));
+});
+
+router.post("/organizations/users", requireRole("owner"), async (req, res) => {
+  const { firstName, lastName, email, role } = req.body;
+  if (!email || !firstName || !role) {
+    res.status(400).json({ error: "Nome, e-mail e perfil são obrigatórios" });
+    return;
+  }
+  const emailClean = String(email).trim().toLowerCase();
+  
+  const existing = await db.query.usersTable.findFirst({
+    where: eq(schema.usersTable.email, emailClean),
+  });
+  if (existing) {
+    res.status(400).json({ error: "E-mail de usuário já cadastrado na plataforma" });
+    return;
+  }
+
+  const [user] = await db
+    .insert(schema.usersTable)
+    .values({
+      tenantId: req.tenantId!,
+      firstName: String(firstName).trim(),
+      lastName: lastName ? String(lastName).trim() : "",
+      email: emailClean,
+      role: String(role).trim(),
+    })
+    .returning();
+
+  res.status(201).json({
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    role: user.role,
+    profileImageUrl: user.profileImageUrl,
+    createdAt: user.createdAt.toISOString(),
+  });
+});
+
+router.patch("/organizations/users/:userId", requireRole("owner"), async (req, res) => {
+  const userId = String(req.params.userId);
+  const { firstName, lastName, role } = req.body;
+  const updates: Partial<typeof schema.usersTable.$inferInsert> = {};
+  if (firstName !== undefined) updates.firstName = String(firstName).trim();
+  if (lastName !== undefined) updates.lastName = String(lastName).trim();
+  if (role !== undefined) updates.role = String(role).trim();
+
+  const [user] = await db
+    .update(schema.usersTable)
+    .set(updates)
+    .where(and(eq(schema.usersTable.id, userId), eq(schema.usersTable.tenantId, req.tenantId!)))
+    .returning();
+
+  if (!user) {
+    res.status(404).json({ error: "Usuário não encontrado" });
+    return;
+  }
+
+  res.json({
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    role: user.role,
+    profileImageUrl: user.profileImageUrl,
+    createdAt: user.createdAt.toISOString(),
+  });
+});
+
+router.delete("/organizations/users/:userId", requireRole("owner"), async (req, res) => {
+  const userId = String(req.params.userId);
+  if (req.user?.id === userId) {
+    res.status(400).json({ error: "Você não pode excluir o seu próprio usuário" });
+    return;
+  }
+
+  const [deleted] = await db
+    .delete(schema.usersTable)
+    .where(and(eq(schema.usersTable.id, userId), eq(schema.usersTable.tenantId, req.tenantId!)))
+    .returning();
+
+  if (!deleted) {
+    res.status(404).json({ error: "Usuário não encontrado" });
+    return;
+  }
+
+  res.status(204).send();
+});
+
 export default router;

@@ -7,6 +7,7 @@ export const AuthUserSchema = zod.object({
   lastName: zod.string().nullish(),
   email: zod.string().nullish(),
   profileImageUrl: zod.string().nullish(),
+  role: zod.string().nullish(),
 });
 
 export type AuthUser = zod.infer<typeof AuthUserSchema>;

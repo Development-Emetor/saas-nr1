@@ -1,11 +1,13 @@
 import { Router, type IRouter, type Request, type Response } from "express";
+import crypto from "crypto";
 import {
   GetCurrentAuthUserResponse,
   ExchangeMobileAuthorizationCodeBody,
   ExchangeMobileAuthorizationCodeResponse,
   LogoutMobileSessionResponse,
 } from "@workspace/api-zod";
-import { db, usersTable, tenantsTable } from "@workspace/db";
+import { db, schema } from "../lib/db";
+const { usersTable, tenantsTable } = schema;
 import { eq } from "drizzle-orm";
 import {
   clearSession,
@@ -29,7 +31,7 @@ function getOrigin(req: Request): string {
 function setSessionCookie(res: Response, sid: string) {
   res.cookie(SESSION_COOKIE, sid, {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_TTL,
@@ -103,18 +105,74 @@ router.get("/auth/user", (req: Request, res: Response) => {
   );
 });
 
-router.get("/login", async (req: Request, res: Response) => {
-  const returnTo = getSafeReturnTo(req.query.returnTo);
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha512").toString("hex");
+  return `${salt}:${hash}`;
+}
 
-  const mockClaims = {
-    sub: "mock-user-123",
-    email: "johnson@emetor.com",
-    firstName: "Johnson",
-    lastName: "Developer",
-    profileImageUrl: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150",
-  };
+function verifyPassword(password: string, stored: string): boolean {
+  const [salt, hash] = stored.split(":");
+  if (!salt || !hash) return false;
+  const checkHash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha512").toString("hex");
+  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(checkHash, "hex"));
+}
 
-  const dbUser = await upsertUser(mockClaims);
+router.post("/login", async (req: Request, res: Response) => {
+  const { email: rawEmail, password } = req.body || {};
+  
+  if (!rawEmail) {
+    res.status(400).json({ error: "E-mail é obrigatório" });
+    return;
+  }
+  if (!password) {
+    res.status(400).json({ error: "Senha é obrigatória" });
+    return;
+  }
+
+  const email = String(rawEmail).trim().toLowerCase();
+
+  let dbUser = await db.query.usersTable.findFirst({
+    where: eq(schema.usersTable.email, email),
+  });
+
+  if (!dbUser) {
+    // If logging in with the default admin email, seed it automatically
+    if (email === "johnson@emetor.com") {
+      const mockClaims = {
+        sub: "mock-user-johnson",
+        email: "johnson@emetor.com",
+        firstName: "Johnson",
+        lastName: "Developer",
+        profileImageUrl: "https://avatar.iran.liara.run/public/1",
+      };
+      dbUser = await upsertUser(mockClaims);
+      // Ensure default user has owner role
+      await db
+        .update(schema.usersTable)
+        .set({ role: "owner" })
+        .where(eq(schema.usersTable.id, dbUser.id));
+      dbUser.role = "owner";
+    } else {
+      res.status(401).json({ error: "Usuário não cadastrado nesta plataforma. Use johnson@emetor.com para o primeiro acesso." });
+      return;
+    }
+  }
+
+  // Password activation or verification
+  if (!dbUser.passwordHash) {
+    const hashed = hashPassword(password);
+    await db
+      .update(schema.usersTable)
+      .set({ passwordHash: hashed })
+      .where(eq(schema.usersTable.id, dbUser.id));
+    dbUser.passwordHash = hashed;
+  } else {
+    if (!verifyPassword(password, dbUser.passwordHash)) {
+      res.status(401).json({ error: "Senha incorreta" });
+      return;
+    }
+  }
 
   const sessionData: SessionData = {
     user: {
@@ -123,20 +181,20 @@ router.get("/login", async (req: Request, res: Response) => {
       firstName: dbUser.firstName,
       lastName: dbUser.lastName,
       profileImageUrl: dbUser.profileImageUrl,
+      role: dbUser.role,
     },
     access_token: "mock-access-token",
   };
 
   const sid = await createSession(sessionData);
   setSessionCookie(res, sid);
-  res.redirect(returnTo);
+  res.json({ user: sessionData.user });
 });
 
-router.get("/logout", async (req: Request, res: Response) => {
-  const origin = getOrigin(req);
+router.post("/logout", async (req: Request, res: Response) => {
   const sid = getSessionId(req);
   await clearSession(res, sid);
-  res.redirect(origin);
+  res.json({ success: true });
 });
 
 router.post(
@@ -164,6 +222,7 @@ router.post(
           firstName: dbUser.firstName,
           lastName: dbUser.lastName,
           profileImageUrl: dbUser.profileImageUrl,
+          role: dbUser.role,
         },
         access_token: "mock-access-token",
       };

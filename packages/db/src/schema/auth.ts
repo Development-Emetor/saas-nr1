@@ -24,6 +24,7 @@ export const usersTable = pgTable("users", {
     onDelete: "set null",
   }),
   role: varchar("role", { length: 32 }).notNull().default("rh"),
+  passwordHash: varchar("password_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
